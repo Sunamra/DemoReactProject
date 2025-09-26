@@ -13,40 +13,97 @@ app.use(cors());
 app.use(express.json());
 
 const FILE_DIR = path.join(process.cwd(), 'public');
-if (!fs.existsSync(FILE_DIR)) fs.mkdirSync(FILE_DIR);
+fs.mkdirSync(FILE_DIR, { recursive: true })
+
 
 // Endpoint to generate a file of given size in MiB
 app.post('/generate', async (req, res) => {
+	let interval;
+	let stream;
 	try {
-		const { size } = req.body; // MiB
+		const { size } = req.body; // kept as in original code
 		if (!size || isNaN(size) || size <= 0) return res.status(400).json({ error: 'Invalid size' });
 
 		const fileName = `file_${size}GiB_${Date.now()}.bin`;
 		const filePath = path.join(FILE_DIR, fileName);
 
-		const CHUNK_SIZE = 256 * 1024 * 1024;           // Memory consumption
+		// Keep CHUNK_SIZE small to limit memory usage (<= 256 MB requirement)
+		const CHUNK_SIZE = 100 * 1024 * 1024; // 100 MiB buffer reused
+
+		// original behavior used GiB multiplication; keeping it to avoid changing semantics
 		const totalBytes = BigInt(size) * 1024n * 1024n * 1024n;
-		const fullChunks = Number(totalBytes / BigInt(CHUNK_SIZE));
-		const remainder = Number(totalBytes % BigInt(CHUNK_SIZE));
 
-		const stream = fs.createWriteStream(filePath, { flags: 'w' });
-		const chunk = Buffer.alloc(CHUNK_SIZE, 0);
+		// create a reusable zero buffer of CHUNK_SIZE
+		const zeroChunk = Buffer.alloc(CHUNK_SIZE, 0);
 
-		for (let i = 0; i < fullChunks; i++) {
-			if (!stream.write(chunk)) await once(stream, 'drain');
+		// stream response to client as progress updates (chunked transfer)
+		res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+		stream = fs.createWriteStream(filePath, { flags: 'w' });
+
+		let bytesWritten = 0n;
+
+		// send progress to client every 5 seconds
+		interval = setInterval(() => {
+			try {
+				res.write(JSON.stringify({ status: 'in-progress', bytesWritten: bytesWritten.toString(), totalBytes: totalBytes.toString() }) + '\n');
+			} catch (err) {
+				// ignore write errors here; they'll be caught in the main flow
+			}
+		}, 5000);
+
+		// handle client disconnect: abort file creation
+		req.on('close', async () => {
+			if (req.aborted) {
+				clearInterval(interval);
+				if (stream) {
+					stream.destroy(new Error('Client disconnected'));
+				}
+			}
+		});
+
+		// Write loop: write CHUNK_SIZE repeatedly using same buffer to keep memory low
+		while (bytesWritten < totalBytes) {
+			const remaining = totalBytes - bytesWritten;
+			const toWrite = remaining > BigInt(CHUNK_SIZE) ? CHUNK_SIZE : Number(remaining);
+
+			// if partial chunk, write a slice of the reusable buffer to avoid allocating new memory
+			const buf = toWrite === CHUNK_SIZE ? zeroChunk : zeroChunk.subarray(0, toWrite);
+
+			if (!stream.write(buf)) {
+				// backpressure: wait for 'drain' before continuing
+				await once(stream, 'drain');
+			}
+			bytesWritten += BigInt(toWrite);
 		}
-		if (remainder > 0) {
-			const tail = Buffer.alloc(remainder, 0);
-			if (!stream.write(tail)) await once(stream, 'drain');
-		}
 
+		// finish write stream
 		stream.end();
 		await once(stream, 'finish');
 
-		res.json({ fileName, url: `/all-files/${fileName}` });
+		clearInterval(interval);
+
+		// final success message (client has been receiving chunks already)
+		res.write(JSON.stringify({ status: 'done', fileName, url: `/all-files/${fileName}`, bytesWritten: bytesWritten.toString() }) + '\n');
+		return res.end();
 	} catch (err) {
-		console.error(err);
-		res.status(500).json({ error: 'File generation failed' });
+		// ensure interval cleared and stream destroyed
+		if (interval) clearInterval(interval);
+		if (stream) stream.destroy();
+
+		console.error('File generation error:', err);
+
+		// If headers weren't sent yet, use normal JSON status; otherwise stream error text and end.
+		if (!res.headersSent) {
+			return res.status(500).json({ error: err && err.message ? err.message : String(err) });
+		} else {
+			try {
+				res.write(JSON.stringify({ status: 'error', error: err && err.message ? err.message : String(err) }) + '\n');
+				res.end();
+			} catch (e) {
+				// nothing to do
+			}
+		}
 	}
 });
 
