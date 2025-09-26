@@ -17,97 +17,78 @@ const FILE_DIR = path.join(process.cwd(), 'public');
 fs.mkdirSync(FILE_DIR, { recursive: true })
 
 
-// Endpoint to generate a file of given size in MiB
+function formatDuration(ms) {
+	const totalMs = Math.floor(ms);
+	const hours = Math.floor(totalMs / 3600000);
+	const minutes = Math.floor((totalMs % 3600000) / 60000);
+	const seconds = Math.floor((totalMs % 60000) / 1000);
+	const milliseconds = totalMs % 1000;
+	return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
+}
+
 app.post('/generate', async (req, res) => {
-	let interval;
 	let stream;
 	try {
-		const { size } = req.body; // kept as in original code
+		const { size } = req.body; // MiB (kept as in original)
 		if (!size || isNaN(size) || size <= 0) return res.status(400).json({ error: 'Invalid size' });
 
 		const fileName = `file_${size}GiB_${Date.now()}.bin`;
 		const filePath = path.join(FILE_DIR, fileName);
 
-		// Keep CHUNK_SIZE small to limit memory usage (<= 256 MB requirement)
+		// Keep CHUNK_SIZE within memory budget
 		const CHUNK_SIZE = 100 * 1024 * 1024; // 100 MiB buffer reused
 
-		// original behavior used GiB multiplication; keeping it to avoid changing semantics
 		const totalBytes = BigInt(size) * 1024n * 1024n * 1024n;
-
-		// create a reusable zero buffer of CHUNK_SIZE
 		const zeroChunk = Buffer.alloc(CHUNK_SIZE, 0);
 
-		// stream response to client as progress updates (chunked transfer)
-		res.setHeader('Content-Type', 'application/json; charset=utf-8');
+		// track time
+		const startTime = process.hrtime.bigint();
 
 		stream = fs.createWriteStream(filePath, { flags: 'w' });
 
 		let bytesWritten = 0n;
 
-		// send progress to client every 5 seconds
-		interval = setInterval(() => {
-			try {
-				res.write(JSON.stringify({ status: 'in-progress', bytesWritten: bytesWritten.toString(), totalBytes: totalBytes.toString() }) + '\n');
-			} catch (err) {
-				// ignore write errors here; they'll be caught in the main flow
-			}
-		}, 5000);
-
 		// handle client disconnect: abort file creation
-		req.on('close', async () => {
+		req.on('close', () => {
 			if (req.aborted) {
-				clearInterval(interval);
 				if (stream) {
 					stream.destroy(new Error('Client disconnected'));
 				}
 			}
 		});
 
-		// Write loop: write CHUNK_SIZE repeatedly using same buffer to keep memory low
 		while (bytesWritten < totalBytes) {
 			const remaining = totalBytes - bytesWritten;
 			const toWrite = remaining > BigInt(CHUNK_SIZE) ? CHUNK_SIZE : Number(remaining);
-
-			// if partial chunk, write a slice of the reusable buffer to avoid allocating new memory
 			const buf = toWrite === CHUNK_SIZE ? zeroChunk : zeroChunk.subarray(0, toWrite);
 
 			if (!stream.write(buf)) {
-				// backpressure: wait for 'drain' before continuing
-				await once(stream, 'drain');
+				await new Promise((resolve, reject) => {
+					stream.once('drain', resolve);
+					stream.once('error', reject);
+				});
 			}
 			bytesWritten += BigInt(toWrite);
 		}
 
-		// finish write stream
 		stream.end();
-		await once(stream, 'finish');
+		await new Promise((resolve, reject) => {
+			stream.once('finish', resolve);
+			stream.once('error', reject);
+		});
 
-		clearInterval(interval);
+		const endTime = process.hrtime.bigint();
+		const durationMs = Number(endTime - startTime) / 1e6; // milliseconds
+		const durationStr = formatDuration(durationMs);
 
-		// final success message (client has been receiving chunks already)
-		res.write(JSON.stringify({ status: 'done', fileName, url: `/all-files/${fileName}`, bytesWritten: bytesWritten.toString() }) + '\n');
-		return res.end();
+		// Final JSON response with time taken
+		return res.json({ fileName, url: `/all-files/${fileName}`, timeTaken: durationStr });
 	} catch (err) {
-		// ensure interval cleared and stream destroyed
-		if (interval) clearInterval(interval);
 		if (stream) stream.destroy();
-
 		console.error('File generation error:', err);
-
-		// If headers weren't sent yet, use normal JSON status; otherwise stream error text and end.
-		if (!res.headersSent) {
-			return res.status(500).json({ error: err && err.message ? err.message : String(err) });
-		} else {
-			try {
-				res.write(JSON.stringify({ status: 'error', error: err && err.message ? err.message : String(err) }) + '\n');
-				res.end();
-			} catch (e) {
-				// nothing to do
-			}
-		}
+		return res.status(500).json({ error: err && err.message ? err.message : String(err) });
 	}
 });
-
 // app.post('/generate', async (req, res) => {
 // 	try {
 // 		const { size } = req.body; // MiB
