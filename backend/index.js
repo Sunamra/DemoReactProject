@@ -21,9 +21,9 @@ app.post('/generate', async (req, res) => {
 		const { size } = req.body; // MiB
 		if (!size || isNaN(size) || size <= 0) return res.status(400).json({ error: 'Invalid size' });
 
-		const fileName = `file_${size}MiB_${Date.now()}.bin`;
+		const fileName = `file_${size}GiB_${Date.now()}.bin`;
 		const filePath = path.join(FILE_DIR, fileName);
-		const totalBytes = Number(size) * 1024 * 1024; // safe for GiB ranges
+		const totalBytes = Number(size) * 1024 * 1024 * 1024; // safe for GiB ranges
 
 		const fh = await fs.promises.open(filePath, 'w');
 		await fh.truncate(totalBytes); // creates file of desired length without buffering
