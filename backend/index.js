@@ -21,13 +21,27 @@ app.post('/generate', async (req, res) => {
 		const { size } = req.body; // MiB
 		if (!size || isNaN(size) || size <= 0) return res.status(400).json({ error: 'Invalid size' });
 
-		const fileName = `file_${size}GiB_${Date.now()}.bin`;
+		const fileName = `file_${size}MiB_${Date.now()}.bin`;
 		const filePath = path.join(FILE_DIR, fileName);
-		const totalBytes = Number(size) * 1024 * 1024 * 1024; // safe for GiB ranges
 
-		const fh = await fs.promises.open(filePath, 'w');
-		await fh.truncate(totalBytes); // creates file of desired length without buffering
-		await fh.close();
+		const CHUNK_SIZE = 256 * 1024 * 1024;           // Memory consumption
+		const totalBytes = BigInt(size) * 1024n * 1024n;
+		const fullChunks = Number(totalBytes / BigInt(CHUNK_SIZE));
+		const remainder = Number(totalBytes % BigInt(CHUNK_SIZE));
+
+		const stream = fs.createWriteStream(filePath, { flags: 'w' });
+		const chunk = Buffer.alloc(CHUNK_SIZE, 0);
+
+		for (let i = 0; i < fullChunks; i++) {
+			if (!stream.write(chunk)) await once(stream, 'drain');
+		}
+		if (remainder > 0) {
+			const tail = Buffer.alloc(remainder, 0);
+			if (!stream.write(tail)) await once(stream, 'drain');
+		}
+
+		stream.end();
+		await once(stream, 'finish');
 
 		res.json({ fileName, url: `/all-files/${fileName}` });
 	} catch (err) {
