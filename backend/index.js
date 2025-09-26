@@ -21,11 +21,11 @@ app.post('/generate', async (req, res) => {
 		const { size } = req.body; // MiB
 		if (!size || isNaN(size) || size <= 0) return res.status(400).json({ error: 'Invalid size' });
 
-		const fileName = `file_${size}MiB_${Date.now()}.bin`;
+		const fileName = `file_${size}GiB_${Date.now()}.bin`;
 		const filePath = path.join(FILE_DIR, fileName);
 
 		const CHUNK_SIZE = 256 * 1024 * 1024;           // Memory consumption
-		const totalBytes = BigInt(size) * 1024n * 1024n;
+		const totalBytes = BigInt(size) * 1024n * 1024n * 1024n;
 		const fullChunks = Number(totalBytes / BigInt(CHUNK_SIZE));
 		const remainder = Number(totalBytes % BigInt(CHUNK_SIZE));
 
