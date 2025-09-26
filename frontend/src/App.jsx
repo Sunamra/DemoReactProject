@@ -4,8 +4,10 @@ const App = () => {
 	const [size, setSize] = useState(1);
 	const [files, setFiles] = useState([]);
 
+	const origin = window?.location?.origin;
+
 	const handleGenerate = async () => {
-		const res = await fetch('http://localhost:3000/generate', {
+		const res = await fetch(`${origin}/generate`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ size }),
@@ -16,7 +18,7 @@ const App = () => {
 
 
 	useEffect(() => {
-		fetch('http://localhost:3000/files')
+		fetch(`${origin}/files`)
 			.then(res => res.json())
 			.then(data => setFiles(data)); // assume backend returns [{fileName, url}, ...]
 	}, []);
@@ -43,7 +45,7 @@ const App = () => {
 			<ul className="mt-4">
 				{files.map((f) => (
 					<li key={f.fileName}>
-						<a href={`${window.location.origin}${f.url}`} target="_blank" className="text-green-400 underline">{f.fileName}</a>
+						<a href={`${origin}${f.url}`} target="_blank" className="text-green-400 underline">{f.fileName}</a>
 					</li>
 				))}
 			</ul>

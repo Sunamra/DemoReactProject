@@ -16,22 +16,24 @@ const FILE_DIR = path.join(process.cwd(), 'public');
 if (!fs.existsSync(FILE_DIR)) fs.mkdirSync(FILE_DIR);
 
 // Endpoint to generate a file of given size in MiB
-app.post('/generate', (req, res) => {
-	const { size } = req.body; // size in MiB
-	if (!size || isNaN(size) || size <= 0) {
-		return res.status(400).json({ error: 'Invalid size' });
+app.post('/generate', async (req, res) => {
+	try {
+		const { size } = req.body; // MiB
+		if (!size || isNaN(size) || size <= 0) return res.status(400).json({ error: 'Invalid size' });
+
+		const fileName = `file_${size}MiB_${Date.now()}.bin`;
+		const filePath = path.join(FILE_DIR, fileName);
+		const totalBytes = Number(size) * 1024 * 1024; // safe for GiB ranges
+
+		const fh = await fs.promises.open(filePath, 'w');
+		await fh.truncate(totalBytes); // creates file of desired length without buffering
+		await fh.close();
+
+		res.json({ fileName, url: `/all-files/${fileName}` });
+	} catch (err) {
+		console.error(err);
+		res.status(500).json({ error: 'File generation failed' });
 	}
-
-	const fileName = `${Date.now()}_${size}GiB.bin`;
-	const filePath = path.join(FILE_DIR, fileName);
-	const buffer = Buffer.alloc(size * 1024 * 1024 * 1024, 0); // Fill with zeros
-
-	fs.writeFile(filePath, buffer, (err) => {
-		if (err) return res.status(500).json({ error: 'File generation failed' });
-		res.json({
-			fileName, url: `/all-files/${fileName}`
-		});
-	});
 });
 
 // Serve files
